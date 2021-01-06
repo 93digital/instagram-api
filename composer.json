@@ -1,0 +1,9 @@
+{
+	"name": "93devs/nine3-instagram-api",
+	"license": "MIT",
+	"minimum-stability": "dev",
+	"autoload": {
+			"classmap": ["class-nine3-instagram.php"],
+			"exclude-from-classmap": ["phpcs.xml"]
+	}
+}
