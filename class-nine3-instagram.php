@@ -4,7 +4,7 @@
  * 
  * @package nine3-instagram
  * @author  93Digital (Mujeeb Nawaz)
- * @version 1.0
+ * @version 1.1
  * @see     https://developers.facebook.com/docs/instagram-basic-display-api/
  * 
  * Inspired by: https://github.com/jstolpe/blog_code/tree/master/instagram_basic_display_api
@@ -14,6 +14,12 @@
  * Stage 2 - Getting a short lived token using authentication code. Valid for an hour.  
  * Stage 3 - Exchanging for a long lived token using short lived token. Valid for 60 days. 
  * 
+ * Change Log. 
+ * 1.1
+ * - Added support for multisite
+ * - @todo 
+ * - - Add an option for shared long-live token or seperate long-live token for multisite. 
+ * - - Add variable for options page slug instead of hard coded version. See line 126.
  * 
  */
 
@@ -112,14 +118,18 @@ class Instagram {
 	 */
 	private function authorise_user(){
 		global $pagenow;
-		$this->long_lived_access_token  = get_option('instagram_long_lived_token');
-		if ( is_admin() && $pagenow === 'admin.php' && $_GET['page'] === 'acf-options-global-options' ) { // long lived token can only be generated in the admin panel. 
+		if( is_multisite() ){
+			$this->long_lived_access_token  = get_site_option('instagram_long_lived_token');
+		}else{
+			$this->long_lived_access_token  = get_option('instagram_long_lived_token');
+		}
+		if ( is_admin() && $pagenow === 'admin.php' && $_GET['page'] === 'acf-options-social' ) { // long lived token can only be generated in the admin panel. 
 			if(!$this->is_valid_long_lived() && isset($_GET['igcode'])){
 				if(!empty($_GET['igcode'])){
 					$this->authentication_code       = explode('#', $_GET['igcode'] )[0]; //Step 1. Gets the authentication code from Get request. 
-					$this->short_lived_access_token  = $this->get_short_lived_token();    //Step 2. Retrieves a short lived token. Valid for 1 hour. 
-					$this->long_lived_access_token   = $this->get_long_lived_token();     //Step 3. Exchanges the short lived token for long lived token. Adds it to wp_options. 
-					$this->user_id                   = $this->get_users_id(); 					  //Step 4. Gets the numerical user ID using long lived token.
+					$this->short_lived_access_token  = $this->get_short_lived_token();  //Step 2. Retrieves a short lived token. Valid for 1 hour. 
+					$this->long_lived_access_token   = $this->get_long_lived_token();   //Step 3. Exchanges the short lived token for long lived token. Adds it to wp_options. 
+					$this->user_id                   = $this->get_users_id(); 					//Step 4. Gets the numerical user ID using long lived token.
 				}
 			}
 		}
@@ -199,7 +209,12 @@ class Instagram {
 		);
 		$response = $this->remote_api_call( $arguments );
 		if(isset($response['access_token'])){
-			update_option('instagram_long_lived_token', $response['access_token']);
+			if( is_multisite() ){
+				update_site_option('instagram_long_lived_token', $response['access_token']);
+			}
+			else{
+				update_option('instagram_long_lived_token', $response['access_token']);
+			}
 			return $response['access_token'];
 		}
 		else{
