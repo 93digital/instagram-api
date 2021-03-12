@@ -4,8 +4,11 @@
  * 
  * @package nine3-instagram
  * @author  93Digital (Mujeeb Nawaz)
- * @version 1.1
+ * @version 1.2
  * @see     https://developers.facebook.com/docs/instagram-basic-display-api/
+ * @todo 
+ * - - Add an option for shared long-live token or seperate long-live token for multisite. 
+ * - - Add variable for options page slug instead of hard coded version. See line 129.
  * 
  * Inspired by: https://github.com/jstolpe/blog_code/tree/master/instagram_basic_display_api
  * 
@@ -17,10 +20,13 @@
  * Change Log. 
  * 1.1
  * - Added support for multisite
- * - @todo 
- * - - Add an option for shared long-live token or seperate long-live token for multisite. 
- * - - Add variable for options page slug instead of hard coded version. See line 126.
  * 
+ * * Change Log. 
+ * 1.2
+ * - Added getters and setters for wp_options and wp_transients. 
+ * - Refactored the if branches which were using is_multisite.
+ * - Added time expiration functionality for long_lived_token instead of checking the validity of token by accessing ig API. See is_valid_long_lived (line 146). 
+ * - Added transient cache for media for 15 mins, as recurring requests were causing API limit reach. 
  */
 
 namespace Nine3;
@@ -107,6 +113,7 @@ class Instagram {
 		 * https://developers.facebook.com/apps/
 		 * 
 		 */
+
 		$this->app_id             = $parameters['app_id']; 
 		$this->app_secret         = $parameters['app_secret'];
 		$this->oauth_redirect_uri = $parameters['oauth_redirect_uri'];
@@ -118,15 +125,11 @@ class Instagram {
 	 */
 	private function authorise_user(){
 		global $pagenow;
-		if( is_multisite() ){
-			$this->long_lived_access_token  = get_site_option('instagram_long_lived_token');
-		}else{
-			$this->long_lived_access_token  = get_option('instagram_long_lived_token');
-		}
-		if ( is_admin() && $pagenow === 'admin.php' && $_GET['page'] === 'acf-options-social' ) { // long lived token can only be generated in the admin panel. 
-			if(!$this->is_valid_long_lived() && isset($_GET['igcode'])){
-				if(!empty($_GET['igcode'])){
-					$this->authentication_code       = explode('#', $_GET['igcode'] )[0]; //Step 1. Gets the authentication code from Get request. 
+		$this->long_lived_access_token  = $this->get_ig_option( 'instagram_long_lived_token' );
+		if ( is_admin() && $pagenow === 'admin.php' && $_GET[ 'page' ] === 'acf-options-global-options' ) { // long lived token can only be generated in the admin panel. 
+			if( !$this->is_valid_long_lived() && isset( $_GET[ 'igcode' ] ) ){
+				if( !empty( $_GET[ 'igcode' ] ) ){
+					$this->authentication_code       = explode( '#', $_GET['igcode'] )[ 0 ]; //Step 1. Gets the authentication code from Get request. 
 					$this->short_lived_access_token  = $this->get_short_lived_token();  //Step 2. Retrieves a short lived token. Valid for 1 hour. 
 					$this->long_lived_access_token   = $this->get_long_lived_token();   //Step 3. Exchanges the short lived token for long lived token. Adds it to wp_options. 
 					$this->user_id                   = $this->get_users_id(); 					//Step 4. Gets the numerical user ID using long lived token.
@@ -138,17 +141,20 @@ class Instagram {
 		}
 	}
 	/**
-	 * Testifies if the long lived token is valid. 
+	 * Checks if the long lived token is valid. 
 	 */
 	public function is_valid_long_lived() {
-		if(isset($this->get_users_id()['error'])){
-			return false;
-		}
-		else{
-			return true;
+		if( $this->get_ig_option('long_lived_token_stored_at' ) && $this->get_ig_option( 'long_lived_expires_in' ) ){
+			$long_lived_expires_in = $this->get_ig_option( 'long_lived_expires_in' );
+			$long_lived_stored_at  = $this->get_ig_option( 'long_lived_token_stored_at' );
+			if( ( time()-$long_lived_stored_at ) < $long_lived_expires_in ){
+				return true;
+			}
+			else{
+				return false;
+			}
 		}
 	}
-	
 	/**
 	 * Function to get the authorization code from instagram. 
 	 * Prompts user to authorize use of facebook app with their instagram to pull their data.
@@ -190,7 +196,6 @@ class Instagram {
 		}
 		else{
 			return $response;
-		
 		}
 	}
 	/**
@@ -208,19 +213,17 @@ class Instagram {
 				)
 		);
 		$response = $this->remote_api_call( $arguments );
-		if(isset($response['access_token'])){
-			if( is_multisite() ){
-				update_site_option('instagram_long_lived_token', $response['access_token']);
-			}
-			else{
-				update_option('instagram_long_lived_token', $response['access_token']);
-			}
-			return $response['access_token'];
+		if( isset( $response[ 'access_token' ] ) ){
+			$this->set_ig_option( 'instagram_long_lived_token', $response['access_token'] );
+			$this->set_ig_option( 'long_lived_expires_in', $response['expires_in'] );
+			$this->set_ig_option( 'long_lived_token_stored_at', time() );
+			return $response[ 'access_token' ];
 		}
 		else{
 			return 	$response;
 		}
 	}
+
 	/**
 	 * 
 	 * Uses long lived token to retrieve the user id. 
@@ -231,23 +234,30 @@ class Instagram {
 	 * 
 	 */
 	private function get_users_id(){
-		$arguments = array(
-			'api_endpoint' => $this->instagram_graph_api . '/me',
-			'type' => 'GET',
-			'url_parameters' => array(
-				'fields' => 'id',
-				'access_token' => $this->long_lived_access_token,
-			)
-		);
-		$response = $this->remote_api_call( $arguments );
-		if(!empty($response['id'])){
-			update_option('instagram_user_id', $response['id']);
-			return $response['id'];
+		if( $this->get_ig_option( 'instagram_user_id' ) === NULL || !$this->get_ig_option( 'instagram_user_id' )  ) {	
+			$arguments = array(
+				'api_endpoint' => $this->instagram_graph_api . '/me',
+				'type' => 'GET',
+				'url_parameters' => array(
+					'fields' => 'id',
+					'access_token' => $this->long_lived_access_token,
+				)
+			);
+			$response = $this->remote_api_call( $arguments );
+			if( ! empty( $response[ 'id' ] ) ){
+				$this->set_ig_option( 'instagram_user_id', $response[ 'id' ] );
+				return $response[ 'id' ];
+			}
+			else{
+				return $response;
+			}
 		}
 		else{
-			return $response;
+			return $this->get_ig_option('instagram_user_id');
 		}
 	}
+
+	
 
 	/**
 	 * 
@@ -256,37 +266,121 @@ class Instagram {
 	 * 
 	 */
 	public function get_user_media(){
-		if($this->long_lived_access_token){
-			$arguments = array(
-				'api_endpoint' => $this->instagram_graph_api . $this->user_id  . '/media',
-				'type' => 'GET',
-				'url_parameters' => array(
-					'fields' => 'id,permalink,timestamp,caption,media_type,media_url',
-					'access_token' => $this->long_lived_access_token,
-				)
-			);
-			$response = $this->remote_api_call( $arguments  );
-			if(!empty($response['data'])){
-				return $response['data'];
-			}
-			else{
-				return $response;
+		$instagram_cached = $this->get_ig_transient( 'instagram_media' );
+		//var_dump($instagram_cached);
+		if ( $instagram_cached ) {
+			return $instagram_cached;
+		} else {
+			if( $this->long_lived_access_token ){
+				$arguments = array(
+					'api_endpoint' => $this->instagram_graph_api . $this->user_id  . '/media',
+					'type' => 'GET',
+					'url_parameters' => array(
+						'fields' => 'id,permalink,timestamp,caption,media_type,media_url',
+						'access_token' => $this->long_lived_access_token,
+					)
+				);
+				$response = $this->remote_api_call( $arguments  );
+				if( !empty( $response[ 'data' ] ) ){
+					$this->set_ig_transient( 'instagram_media', $response[ 'data' ], 900 );
+					return $response[ 'data' ];
+				}
+				else{
+					return $response;
+				}
 			}
 		}
 	}
-	
+
+	/**
+	 * Custom Setters and Getters to extend wordpress. 
+	 * @see if such functionality already exist in WordPress. 
+	*/
+
+	/**
+	 * Custom Options getter. 
+	 * Checks if the site is multisite or not, depending on that uses 'get_site_option' or 'get_option'.
+	 */
+	public static function get_ig_option( $option_name ){
+		if( is_multisite() ){
+			return get_site_option( $option_name );
+		}
+		else{
+			return get_option( $option_name );
+		}
+	}	
+	/**
+	 * Custom Option setter. 
+	 * Checks if the site is multisite or not, depending on that uses 'update_site_option' or 'update_option'.
+	 */
+	public static function set_ig_option( $option_name, $option_value ){
+		if( is_multisite() ){
+			return update_site_option( $option_name, $option_value );
+		}
+		else{
+			return update_option( $option_name, $option_value );
+		}
+	}
+	/**
+	 * Custom Option remover. 
+	 * Checks if the site is multisite or not, depending on that uses 'delete_site_option' or 'delete_option'.
+	 */
+	public static function delete_ig_option( $option_name ){
+		if( is_multisite() ){
+			return delete_site_option( $option_name );
+		}
+		else{
+			return delete_option( $option_name );
+		}
+	}
+	/**
+	 * Custom transient setter.
+	 * Checks if the site is multisite or not, depending on that uses 'set_site_transient' or 'set_transient'.
+	 */
+	public static function set_ig_transient( $transient_name, $transient_value ){
+		if( is_multisite() ){
+			return set_site_transient( $transient_name, $transient_value );
+		}
+		else{
+			return set_transient( $transient_name, $transient_value );
+		}
+	}
+	/**
+	 * Custom transient getter.
+	 * Checks if the site is multisite or not, depending on that uses 'set_site_transient' or 'set_transient'.
+	 */
+	public static function get_ig_transient( $transient_name ){
+		if( is_multisite() ){
+			return get_site_transient( $transient_name );
+		}
+		else{
+			return get_transient( $transient_name );
+		}
+	}
+	/**
+	 * Custom transient re-setter.
+	 * Checks if the site is multisite or not, depending on that uses 'delete_site_transient' or 'delete_transient'.
+	 */
+	public static function delete_ig_transient( $transient_name ){
+		if( is_multisite() ){
+			return delete_site_transient( $transient_name );
+		}
+		else{
+			return delete_transient( $transient_name );
+		}
+	}
 	/**
 	 * 
 	 * Method to make remote calls using Curl. 
 	 */
 	function remote_api_call( $parameters ){
 		$ch = curl_init();  
-		$api_endpoint = $parameters['api_endpoint'];
-		if($parameters['type'] == 'GET'){
+		$api_endpoint = $parameters[ 'api_endpoint' ];
+		if( $parameters['type'] == 'GET' ){
 				//All GET requests requires either short lived or long lived token. 
-				$api_endpoint .= '?' . http_build_query( $parameters['url_parameters'] );
-		} elseif ($parameters['type'] == 'POST') {
-				curl_setopt( $ch, CURLOPT_POSTFIELDS, http_build_query( $parameters['url_parameters'] ));
+				$api_endpoint .= '?' . http_build_query( $parameters[ 'url_parameters' ] );
+		} elseif ( $parameters[ 'type' ] == 'POST') {
+				curl_setopt( $ch, CURLOPT_POSTFIELDS, http_build_query( $parameters[ 'url_parameters' ] ) );
 				curl_setopt( $ch, CURLOPT_POST, 1 );
 		}
 
@@ -295,8 +389,7 @@ class Instagram {
 		$result = curl_exec( $ch );  
 		curl_close( $ch ); 
 		$response = json_decode( $result, true );
-
-		if ( isset( $response['error_type'] ) ) {
+		if ( isset( $response[ 'error_type' ] ) ) {
 			return $response;
 			die();
 		} else {
