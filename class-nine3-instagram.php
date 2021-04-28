@@ -267,7 +267,6 @@ class Instagram {
 	 */
 	public function get_user_media(){
 		$instagram_cached = $this->get_ig_transient( 'instagram_media' );
-		//var_dump($instagram_cached);
 		if ( $instagram_cached ) {
 			return $instagram_cached;
 		} else {
@@ -337,12 +336,12 @@ class Instagram {
 	 * Custom transient setter.
 	 * Checks if the site is multisite or not, depending on that uses 'set_site_transient' or 'set_transient'.
 	 */
-	public static function set_ig_transient( $transient_name, $transient_value ){
+	public static function set_ig_transient( $transient_name, $transient_value, $expiration ){
 		if( is_multisite() ){
-			return set_site_transient( $transient_name, $transient_value );
+			return set_site_transient( $transient_name, $transient_value, $expiration );
 		}
 		else{
-			return set_transient( $transient_name, $transient_value );
+			return set_transient( $transient_name, $transient_value, $expiration );
 		}
 	}
 	/**
